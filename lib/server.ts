@@ -1,7 +1,8 @@
-import { env } from 'cloudflare:workers';
+import { database } from '../local/database.ts';
 import { z } from 'zod';
-import { Attempt, Lesson, Snapshot, Word, dayKey, lessonSchema, reviewSchema, roadmapSchema, scoreAnswer, wordState, evidence, aspects, levels, criteria, levelDescriptions } from './model';
-function db(){if(!env.DB)throw new Error('Хранилище недоступно');return env.DB;}
+import type { Attempt, Lesson, Snapshot, Word } from './model.ts';
+import { dayKey, lessonSchema, reviewSchema, roadmapSchema, scoreAnswer, wordState, evidence, aspects, levels, criteria, levelDescriptions } from './model.ts';
+function db(){return database;}
 export async function list<T>(owner:string,kind:string):Promise<T[]>{const r=await db().prepare('SELECT payload FROM records WHERE owner=? AND kind=? ORDER BY created').bind(owner,kind).all<{payload:string}>();return r.results.map(r=>JSON.parse(r.payload));}
 async function put(owner:string,kind:string,id:string,value:unknown,replace=false){await db().prepare(replace?'INSERT INTO records (owner,kind,id,payload,created) VALUES (?,?,?,?,?) ON CONFLICT(owner,kind,id) DO UPDATE SET payload=excluded.payload':'INSERT OR IGNORE INTO records (owner,kind,id,payload,created) VALUES (?,?,?,?,?)').bind(owner,kind,id,JSON.stringify(value),new Date().toISOString()).run();}
 export async function snapshot(owner:string):Promise<Snapshot>{const [lessons,attempts,words,maps,reviews]=await Promise.all([list<Lesson>(owner,'lesson'),list<Attempt>(owner,'attempt'),list<Word>(owner,'word'),list<Snapshot['roadmap']>(owner,'roadmap'),list<z.infer<typeof reviewSchema>>(owner,'review')]);return {lessons,words,roadmap:maps[0]||{topics:[]},attempts:attempts.map(a=>{const review=reviews.find(r=>r.attemptId===a.id);return review?{...a,review,score:Object.values(review.rubric).reduce((s,n)=>s+n,0)/16,correct:null}:a;})};}

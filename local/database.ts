@@ -19,7 +19,8 @@ export function backupBeforeWrite(){
  const day=new Date().toISOString().slice(0,10);if(backupDay===day)return;
  const folder=resolve(dataDirectory,'backups');mkdirSync(folder,{recursive:true});
  const target=resolve(folder,`lernraum-${new Date().toISOString().slice(0,10)}.sqlite`);
- if(!existsSync(target)&&Number((sqlite.prepare('SELECT count(*) AS n FROM records').get() as {n:number}).n)>0)sqlite.prepare('VACUUM INTO ?').run(target);
+ if(Number((sqlite.prepare('SELECT count(*) AS n FROM records').get() as {n:number}).n)===0)return;
+ if(!existsSync(target))sqlite.prepare('VACUUM INTO ?').run(target);
  backupDay=day;
 }
 export const database={prepare(sql:string){return {bind(...values:string[]){return {

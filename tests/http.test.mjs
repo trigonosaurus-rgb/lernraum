@@ -1,0 +1,26 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+const folder=mkdtempSync(resolve(tmpdir(),'lernraum-http-test-'));
+const base='http://127.0.0.1:14177';
+let child;
+test('HTTP is local, rejects cross-origin writes, and serves persisted state',async()=>{
+ child=spawn(process.execPath,['--experimental-strip-types','local/http.ts'],{env:{...process.env,LERNRAUM_DATA_DIR:folder,LERNRAUM_PORT:'14177'},stdio:['ignore','pipe','pipe']});
+ await new Promise((res,rej)=>{const timeout=setTimeout(()=>rej(Error('Server startup timeout')),10000);child.stdout.once('data',()=>{clearTimeout(timeout);res();});child.once('error',rej);child.once('exit',code=>{clearTimeout(timeout);rej(Error('Unexpected exit '+code));});});
+ assert.equal((await (await fetch(base+'/api/health')).json()).local,true);
+ assert.equal((await fetch(base+'/api/studio',{headers:{Origin:'https://example.com'}})).status,403);
+ assert.equal((await fetch(base+'/api/studio',{method:'POST',headers:{'Content-Type':'text/plain'},body:'{}'})).status,415);
+ assert.equal((await fetch(base+'/api/studio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create_lesson',data:{}})})).status,400);
+ const write=await fetch(base+'/api/studio',{method:'POST',headers:{'Content-Type':'application/json',Origin:base},body:JSON.stringify({action:'word',data:{term:'der Zug',translation:'поезд'}})});
+ assert.equal(write.status,200);assert.equal((await (await fetch(base+'/api/studio')).json()).words[0].term,'der Zug');
+ assert.ok((await (await fetch(base+'/api/teacher-prompt')).text()).includes('Инструкция модели'));
+ assert.equal((await fetch(base+'/api/shutdown',{method:'POST'})).status,403);
+ const control=JSON.parse(readFileSync(resolve(folder,'server-control.json'),'utf8'));
+ const exited=new Promise(r=>child.once('exit',r));
+ assert.equal((await fetch(base+'/api/shutdown',{method:'POST',headers:{'X-Lernraum-Control':control.controlToken}})).status,200);
+ await exited;
+});
+test.after(async()=>{if(child&&child.exitCode===null&&!child.killed){const exited=new Promise(r=>child.once('exit',r));child.kill();await exited;}assert.ok(folder.startsWith(resolve(tmpdir(),'lernraum-http-test-')));rmSync(folder,{recursive:true,force:true});});

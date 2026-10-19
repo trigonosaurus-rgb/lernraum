@@ -1,13 +1,17 @@
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
+import { writeFileSync, renameSync, readFileSync, unlinkSync } from 'node:fs';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve, extname, sep } from 'node:path';
 import { z } from 'zod';
 import { addWord, publicSnapshot, snapshot, startReview, submit } from '../lib/server.ts';
-import { LOCAL_OWNER, projectRoot } from './database.ts';
+import { LOCAL_OWNER, projectRoot, dataDirectory, sqlite } from './database.ts';
 const port=Number(process.env.LERNRAUM_PORT||4177);
 if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('Invalid port');
 const root=resolve(projectRoot,'dist-local');
 const origin=`http://127.0.0.1:${port}`;
+const controlToken=randomBytes(32).toString('hex');
+const controlFile=resolve(dataDirectory,'server-control.json');
 const allowedHosts=new Set([`127.0.0.1:${port}`,`localhost:${port}`]);
 const mime:Record<string,string>={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.woff2':'font/woff2'};
 const server=createServer(async(req,res)=>{
@@ -17,6 +21,12 @@ const server=createServer(async(req,res)=>{
  try{
   const pathname=new URL(req.url||'/',origin).pathname;
   if(pathname==='/api/health'){json({app:'lernraum-local',version:'0.2.0',storage:'sqlite',local:true});return;}
+  if(pathname==='/api/shutdown'&&req.method==='POST'){
+   const token=req.headers['x-lernraum-control'];
+   if(typeof token!=='string'||token.length!==controlToken.length||!timingSafeEqual(Buffer.from(token),Buffer.from(controlToken))){json({error:'Invalid control token'},403);return;}
+   json({ok:true});setImmediate(shutdown);return;
+  }
+  if(pathname==='/api/teacher-prompt'&&req.method==='GET'){res.writeHead(200,{'Content-Type':'text/markdown; charset=utf-8','Content-Disposition':'attachment; filename="TEACHER_PROMPT.md"','Cache-Control':'no-store'});res.end(await readFile(resolve(projectRoot,'TEACHER_PROMPT.md')));return;}
   if(pathname==='/api/studio'){
    if(req.method==='GET'){json(publicSnapshot(await snapshot(LOCAL_OWNER)));return;}
    if(req.method!=='POST'){json({error:'Method not allowed'},405);return;}
@@ -32,6 +42,14 @@ const server=createServer(async(req,res)=>{
  }catch(e){json({error:(e as Error).message},400);}
 });
 server.on('error',e=>{console.error(e.message);process.exitCode=1;});
-server.listen(port,'127.0.0.1',()=>console.log(`Lernraum: ${origin}`));
-process.on('SIGINT',()=>server.close(()=>process.exit()));
-process.on('SIGTERM',()=>server.close(()=>process.exit()));
+server.listen(port,'127.0.0.1',()=>{
+ const temporary=controlFile+'.'+process.pid+'.tmp';
+ writeFileSync(temporary,JSON.stringify({pid:process.pid,origin,controlToken}));renameSync(temporary,controlFile);
+ console.log(`Lernraum: ${origin}`);
+});
+function shutdown(){server.close(()=>{
+ try{const record=JSON.parse(readFileSync(controlFile,'utf8'));if(record.pid===process.pid)unlinkSync(controlFile);}catch{}
+ sqlite.close();process.exit();
+});server.closeIdleConnections();}
+process.on('SIGINT',shutdown);
+process.on('SIGTERM',shutdown);
